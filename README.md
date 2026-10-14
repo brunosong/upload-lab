@@ -16,7 +16,8 @@ CDN 스토리지 이관 작업에서 업체가 주는 1GB 안팎의 파일 목�
 - 화면: http://localhost:8098
 - 메인 화면에서 "스트리밍 방식"과 "파일 쪼개는 방식" 중 하나를 골라 들어갑니다. 기능마다 페이지가 따로 있습니다.
 - 테스트: `mvnw test`
-- 올린 파일은 프로젝트 폴더의 `uploads/`에 쌓입니다. 업로드 기록은 메모리에만 있어서 서버를 끄면 사라집니다.
+- 올린 파일은 프로젝트 폴더의 `uploads/`에 쌓입니다.
+- 업로드 기록을 어디에 남길지는 `application.properties`의 `lab.record.type`으로 고릅니다. `memory`(기본값)는 서버를 끄면 사라지고, `file`은 `uploads/records.jsonl`에 남습니다. 실행할 때 `mvnw spring-boot:run -Dspring-boot.run.arguments=--lab.record.type=file`로 바꿀 수도 있습니다.
 
 테스트용 1GB 파일은 Windows에서 이렇게 만듭니다. 내용은 전부 0입니다.
 
@@ -46,7 +47,8 @@ com.example.uploadlab
     └── adapter/
         ├── in/web/StreamUploadController.java   HTTP 요청을 유스케이스 호출로 바꿈
         ├── out/storage/LocalDiskStorageAdapter.java     8KB씩 받아 디스크에 씀
-        └── out/record/InMemoryUploadRecordAdapter.java  기록을 메모리에 둠
+        ├── out/record/InMemoryUploadRecordAdapter.java  기록을 메모리에 둠 (lab.record.type=memory)
+        └── out/record/FileUploadRecordAdapter.java      기록을 records.jsonl 에 둠 (lab.record.type=file)
 
 resources/static/
 ├── index.html                메인. 방식 고르기
@@ -62,7 +64,7 @@ resources/static/
 Controller(in 어댑터) → UseCase(in 포트) ← Service → out 포트 ← out 어댑터(디스크, 메모리)
 ```
 
-서비스는 포트 인터페이스만 압니다. 나중에 기록을 MongoDB에 남기고 싶으면, `UploadRecordPort`를 구현한 Mongo 어댑터를 하나 만들어 `InMemoryUploadRecordAdapter`와 바꿔 끼웁니다. 서비스 코드는 그대로입니다.
+서비스는 포트 인터페이스만 압니다. 기록 어댑터가 메모리, 파일 두 개 있고 설정값으로 하나만 올라갑니다. 서비스 코드는 어느 쪽이든 그대로입니다. 어댑터를 어떻게 추가하고 교체하는지, 언제 어댑터 대신 유스케이스를 새로 만드는지는 [결정 문서](docs/결정-어댑터%20교체와%20유스케이스%20분리.md)에 정리했습니다.
 
 ---
 
