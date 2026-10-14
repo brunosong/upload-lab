@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스트리밍 방식</title>
+<style>
+  :root { --bg:#f7f7f5; --card:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e3e3de; --accent:#2f5d8a; --warn:#b4532a; --ok:#2f7a4d; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.6 -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); background:var(--card); }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; color:var(--muted); }
+  header a { color:var(--accent); }
+  main { padding:16px 20px; max-width:960px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:16px; }
+  section h2 { margin:0 0 8px; font-size:14px; }
+  button { margin-top:8px; padding:6px 12px; border:1px solid var(--accent); background:var(--accent); color:#fff; border-radius:4px; cursor:pointer; font:inherit; }
+  button:disabled { opacity:.5; cursor:default; }
+  progress { width:100%; height:14px; margin-top:10px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { border-bottom:1px solid var(--line); padding:4px 6px; text-align:left; }
+  th { color:var(--muted); font-weight:normal; }
+  td.hash { font-family:Consolas, monospace; word-break:break-all; }
+  #status { margin-top:6px; color:var(--muted); min-height:1.5em; }
+  #status.error { color:var(--warn); }
+  #status.done { color:var(--ok); }
+  pre { background:#f3f3f0; padding:10px; border-radius:4px; overflow:auto; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>스트리밍 방식</h1>
+  <p><a href="/">처음으로</a> &nbsp; 파일을 요청 하나로 보내고, 서버는 8KB씩 받는 대로 디스크에 씁니다.</p>
+</header>
+<main>
+
+  <section>
+    <h2>1. 파일 고르고 보내기</h2>
+    <input type="file" id="file">
+    <br>
+    <button id="send">보내기</button>
+    <progress id="bar" value="0" max="1"></progress>
+    <div id="status"></div>
+  </section>
+
+  <section>
+    <h2>2. 방금 올린 결과</h2>
+    <table>
+      <tr><th>원래 이름</th><td id="r-name">-</td></tr>
+      <tr><th>받은 크기</th><td id="r-size">-</td></tr>
+      <tr><th>SHA-256</th><td id="r-hash" class="hash">-</td></tr>
+      <tr><th>서버가 받는 데 걸린 시간</th><td id="r-elapsed">-</td></tr>
+      <tr><th>업로드 직후 서버 힙 사용량</th><td id="r-heap">-</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>3. 올린 파일 목록</h2>
+    <table>
+      <thead><tr><th>시각</th><th>원래 이름</th><th>크기</th><th>걸린 시간</th><th>SHA-256</th></tr></thead>
+      <tbody id="list"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>이 화면에서 일어나는 일</h2>
+<pre>
+[브라우저]  xhr.send(file)            File 객체를 그대로 넘김. 브라우저가 디스크에서 조금씩 읽어 보냄
+     │      PUT /api/streaming/uploads  (Content-Type: application/octet-stream)
+     ▼
+[StreamUploadController]  request.getInputStream()  본문을 읽을 수 있는 통로만 넘김
+     ▼
+[StreamUploadService]     ID 만들고, 저장 포트 호출, 기록 포트 호출
+     ▼
+[LocalDiskStorageAdapter] while (read 8KB) { write 8KB }  받는 대로 디스크에 씀
+                          DigestInputStream 으로 읽으면서 SHA-256 계산
+</pre>
+  </section>
+
+</main>
+
+<script>
+  const $ = id => document.getElementById(id);
+
+  function mb(bytes) {
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  function setStatus(text, cls) {
+    $('status').textContent = text;
+    $('status').className = cls || '';
+  }
+
+  // fetch 에는 업로드 진행률 이벤트가 없어서 XMLHttpRequest 를 쓴다
+  function uploadStream(file, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', '/api/streaming/uploads');
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));   // 한글 이름 때문에 인코딩
+
+      xhr.upload.onprogress = e => onProgress(e.loaded, e.total);
+      xhr.onload = () => xhr.status === 200
+          ? resolve(JSON.parse(xhr.responseText))
+          : reject('서버 응답 ' + xhr.status);
+      xhr.onerror = () => reject('네트워크 오류');
+
+      xhr.send(file);   // arrayBuffer() 로 읽어서 넘기지 않는다. 그러면 1GB가 브라우저 메모리에 올라간다
+    });
+  }
+
+  async function send() {
+    const file = $('file').files[0];
+    if (!file) { setStatus('파일을 먼저 고르세요.', 'error'); return; }
+
+    $('send').disabled = true;
+    $('bar').value = 0;
+    const started = performance.now();
+
+    try {
+      const res = await uploadStream(file, (loaded, total) => {
+        $('bar').value = loaded / total;
+        setStatus(mb(loaded) + ' / ' + mb(total));
+      });
+      const sec = ((performance.now() - started) / 1000).toFixed(1);
+      setStatus('완료. 브라우저 기준 ' + sec + '초', 'done');
+      showResult(res);
+      loadList();
+    } catch (e) {
+      setStatus('실패: ' + e, 'error');
+    } finally {
+      $('send').disabled = false;
+    }
+  }
+
+  function showResult(res) {
+    const f = res.file;
+    $('r-name').textContent = f.originalName;
+    $('r-size').textContent = mb(f.size) + ' (' + f.size.toLocaleString() + ' bytes)';
+    $('r-hash').textContent = f.sha256;
+    $('r-elapsed').textContent = (f.elapsedMillis / 1000).toFixed(1) + '초';
+    $('r-heap').textContent = res.usedHeapMb + ' MB';
+  }
+
+  async function loadList() {
+    const files = await (await fetch('/api/streaming/uploads')).json();
+    $('list').innerHTML = '';
+    for (const f of files) {
+      const tr = document.createElement('tr');
+      [f.uploadedAt.replace('T', ' ').slice(0, 19), f.originalName, mb(f.size),
+       (f.elapsedMillis / 1000).toFixed(1) + '초', f.sha256].forEach((v, i) => {
+        const td = document.createElement('td');
+        td.textContent = v;
+        if (i === 4) td.className = 'hash';
+        tr.appendChild(td);
+      });
+      $('list').appendChild(tr);
+    }
+  }
+
+  $('send').addEventListener('click', send);
+  loadList();
+</script>
+</body>
+</html>

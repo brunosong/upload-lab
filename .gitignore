@@ -1,0 +1,17 @@
+# 빌드 결과
+target/
+
+# 올린 파일 (lab.upload.dir)
+uploads/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 테스트용 대용량 파일
+*.bin
