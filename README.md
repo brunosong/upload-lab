@@ -38,14 +38,21 @@ com.example.uploadlab
 ├── UploadLabApplication.java
 └── streaming/                                   스트리밍 방식 (이 폴더만 보면 다 있음)
     ├── domain/
-    │   └── UploadedFile.java                    업로드 결과 한 건. 스프링을 모르는 순수 값
+    │   ├── UploadedFile.java                    업로드 결과 한 건. 스프링을 모르는 순수 값
+    │   ├── CsvRowReader.java                    CSV를 글자 하나씩 읽어 한 행씩 돌려줌 (9장)
+    │   ├── TextReadResult.java                  텍스트를 받으면서 읽은 결과 (9장)
+    │   └── CsvReadResult.java                   CSV를 받으면서 읽은 결과 (9장)
     ├── application/
     │   ├── port/in/StreamUploadUseCase.java     바깥이 이 기능에 시키는 일
+    │   ├── port/in/StreamReadUseCase.java       받으면서 읽기. 저장하지 않음 (9장)
     │   ├── port/out/FileStoragePort.java        어디에 저장할지 (구현은 어댑터)
     │   ├── port/out/UploadRecordPort.java       어디에 기록할지 (구현은 어댑터)
-    │   └── StreamUploadService.java             흐름만 담음. 디스크, 메모리를 직접 모름
+    │   ├── StreamUploadService.java             흐름만 담음. 디스크, 메모리를 직접 모름
+    │   └── StreamReadService.java               한 줄씩 읽고 로그로 남긴 뒤 버림 (9장)
     └── adapter/
         ├── in/web/StreamUploadController.java   HTTP 요청을 유스케이스 호출로 바꿈
+        ├── in/web/StreamReadController.java     /api/streaming/read/text, /csv (9장)
+        ├── in/web/StreamReadExceptionHandler.java   형식 오류를 400으로 바꿈 (9장)
         ├── out/storage/LocalDiskStorageAdapter.java     8KB씩 받아 디스크에 씀
         ├── out/record/InMemoryUploadRecordAdapter.java  기록을 메모리에 둠 (lab.record.type=memory)
         └── out/record/FileUploadRecordAdapter.java      기록을 records.jsonl 에 둠 (lab.record.type=file)
@@ -325,3 +332,58 @@ a.xlsx (ZIP)
 | xls | 불가능 | 어려움 |
 
 1GB 목록 파일이라면 업체에 CSV나 TSV로 달라고 하는 게 가장 확실합니다. 엑셀은 시트 하나에 약 104만 행까지라는 제한도 있습니다.
+
+---
+
+## 9. 받으면서 읽기: text와 CSV
+
+8장의 "받으면서 처리하기"를 실제로 돌려 봅니다. 파일을 저장하지 않고, 들어오는 대로 한 줄(한 행)씩 읽어 서버 로그에 남긴 뒤 버립니다. 실제 서비스라면 로그를 찍는 자리에서 DB에 넣으면 됩니다.
+
+    curl -T list.csv -H "Content-Type: application/octet-stream" -H "X-File-Name: list.csv" http://localhost:8098/api/streaming/read/csv
+    curl -T log.txt  -H "Content-Type: application/octet-stream" -H "X-File-Name: log.txt"  http://localhost:8098/api/streaming/read/text
+
+스트리밍 화면의 "4. 받으면서 읽기"에서 파일을 고르고 "text로 읽기", "csv로 읽기"를 눌러도 됩니다. 보내는 방법은 업로드와 똑같고 주소만 다릅니다.
+
+```
+[StreamReadController]  request.getInputStream()
+     ▼
+[StreamReadService]     CountingInputStream     지금까지 받은 바이트 수를 셈 (로그용)
+                        InputStreamReader(UTF-8) 바이트 → 글자
+                        text: BufferedReader.readLine()   한 줄씩
+                        csv : CsvRowReader.next()         한 행씩
+                        처음 5줄은 내용을, 그다음은 10만 줄마다 진행 상황을 로그로 찍음
+```
+
+### 로그는 이렇게 찍힙니다
+
+2026-10-19에 힙을 64MB로 제한한 서버(`java -Xmx64m -jar ...`)에 60MB짜리 CSV(100만 행)를 초당 20MB로 보냈습니다.
+
+```
+14:49:18.972 INFO [csv] 시작: list.csv
+14:49:18.974 INFO [csv] 헤더 3칸: [path, size, memo]
+14:49:18.977 INFO [csv] 1번째 행 (지금까지 받은 8,192 bytes): {path=/img/a.jpg, size=100, memo=서울, 강남}
+14:49:18.977 INFO [csv] 2번째 행 (지금까지 받은 8,192 bytes): {path=/img/b.jpg, size=200, memo=말 "인용" 끝}
+14:49:18.977 INFO [csv] 3번째 행 (지금까지 받은 8,192 bytes): {path=/img/c.jpg, size=300, memo=첫 줄\n둘째 줄}
+14:49:18.977 WARN [csv] 4번째 행은 칸이 2개입니다 (헤더는 3개): [/img/d.jpg, 400]
+14:49:18.977 INFO [csv] 5번째 행 (지금까지 받은 8,192 bytes): {path=/cdn/2026/10/00000000/photo_0.jpg, size=0, memo=메모0}
+14:49:19.465 INFO [csv] 100,000행 읽음, 받은 5.6 MB, 0.5초, 힙 28 MB
+14:49:19.841 INFO [csv] 200,000행 읽음, 받은 11.4 MB, 0.9초, 힙 18 MB
+...
+14:49:21.859 INFO [csv] 1,000,000행 읽음, 받은 57.8 MB, 2.9초, 힙 29 MB
+14:49:21.863 INFO [csv] 끝: 1,000,004행, 칸 수가 틀린 행 1개, 받은 57.8 MB, 2.9초, 힙 29 MB
+```
+
+- **첫 행은 8KB만 받았을 때 이미 처리됩니다.** 파일 전체를 기다리지 않습니다.
+- **"받은 MB"가 보내는 속도(초당 20MB)대로 늘어납니다.** 업로드가 끝나기 전부터 읽고 있다는 뜻입니다.
+- **힙이 20~30MB 사이를 오갑니다.** 60MB 파일을 64MB 힙에서 읽었습니다. text(80MB, 100만 줄)도 최대 32MB였습니다.
+- 힙을 제한하지 않으면 힙 사용량이 300MB까지 올라갔다가 떨어집니다. 읽고 버린 줄이 GC로 아직 안 치워졌을 뿐이고 붙잡고 있는 메모리가 아닙니다. 그래서 힙을 작게 제한해서 확인했습니다.
+- 형식이 틀리면 400입니다: `{"message":"2번째 줄에서 연 따옴표가 닫히지 않은 채 파일이 끝났습니다"}`
+
+### 코드에서 볼 부분
+
+- **CSV를 `readLine()` + `split(",")`로 읽지 않음**: 위 로그의 1~3번째 행처럼 따옴표 안의 쉼표, 따옴표 글자를 뜻하는 `""`, 따옴표 안의 줄바꿈이 있으면 틀립니다. 특히 따옴표 안의 줄바꿈은 `readLine()`이 행 하나를 둘로 쪼갭니다. `CsvRowReader`는 글자를 하나씩 보며 따옴표 안인지 밖인지 기억합니다.
+- **한 행이 너무 길면 끊음**: 줄바꿈 없는 1GB가 오면 한 행이 1GB가 됩니다. `CsvRowReader`는 100만 글자를 넘으면 예외를 던집니다. text 쪽 `readLine()`에는 이 제한이 없어서, 줄바꿈 없는 큰 파일이 오면 힙에 그대로 쌓입니다.
+- **BOM**: 엑셀이 UTF-8로 저장한 CSV는 맨 앞에 `\uFEFF`(BOM)가 붙어서, 그대로 두면 첫 헤더 이름이 `\uFEFFpath`가 됩니다. 떼어 냅니다.
+- **인코딩은 UTF-8 고정**: 한국어 엑셀의 기본 CSV 저장(CP949)으로 만든 파일은 한글이 깨집니다.
+- **로그를 줄마다 찍지 않음**: 1GB면 몇백만 줄이라 로그가 넘칩니다. 처음 5줄만 내용을, 그다음은 10만 줄마다 진행 상황만 찍습니다.
+- **테스트**: `CsvRowReaderTest`가 따옴표, 줄바꿈, BOM, 닫히지 않은 따옴표, 너무 긴 행을 확인합니다. `StreamReadServiceTest`는 100만 행 CSV를 배열 없이 그때그때 만들어 흘려 보냅니다.

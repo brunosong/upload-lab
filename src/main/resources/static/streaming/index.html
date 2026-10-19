@@ -45,6 +45,15 @@
   </section>
 
   <section>
+    <h2>4. 받으면서 읽기 (저장하지 않음)</h2>
+    위에서 고른 파일을 보내면 서버가 한 줄씩 읽고 버립니다. 무엇을 읽었는지는 <b>서버 로그</b>에 찍힙니다.
+    <br>
+    <button id="read-text">text로 읽기</button>
+    <button id="read-csv">csv로 읽기</button>
+    <pre id="read-result">-</pre>
+  </section>
+
+  <section>
     <h2>2. 방금 올린 결과</h2>
     <table>
       <tr><th>원래 이름</th><td id="r-name">-</td></tr>
@@ -93,17 +102,17 @@
   }
 
   // fetch 에는 업로드 진행률 이벤트가 없어서 XMLHttpRequest 를 쓴다
-  function uploadStream(file, onProgress) {
+  function uploadStream(file, onProgress, url = '/api/streaming/uploads') {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('PUT', '/api/streaming/uploads');
+      xhr.open('PUT', url);
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));   // 한글 이름 때문에 인코딩
 
       xhr.upload.onprogress = e => onProgress(e.loaded, e.total);
       xhr.onload = () => xhr.status === 200
           ? resolve(JSON.parse(xhr.responseText))
-          : reject('서버 응답 ' + xhr.status);
+          : reject('서버 응답 ' + xhr.status + ' ' + xhr.responseText);
       xhr.onerror = () => reject('네트워크 오류');
 
       xhr.send(file);   // arrayBuffer() 로 읽어서 넘기지 않는다. 그러면 1GB가 브라우저 메모리에 올라간다
@@ -159,7 +168,28 @@
     }
   }
 
+  // 받으면서 읽기. 보내는 방법은 업로드와 똑같고 주소만 다르다
+  async function read(type) {
+    const file = $('file').files[0];
+    if (!file) { setStatus('파일을 먼저 고르세요.', 'error'); return; }
+
+    $('read-result').textContent = '보내는 중... 서버 로그를 보세요';
+    try {
+      const res = await uploadStream(file, (loaded, total) => {
+        $('bar').value = loaded / total;
+        setStatus(mb(loaded) + ' / ' + mb(total));
+      }, '/api/streaming/read/' + type);
+      setStatus('읽기 완료', 'done');
+      $('read-result').textContent = JSON.stringify(res, null, 2);
+    } catch (e) {
+      setStatus('실패', 'error');
+      $('read-result').textContent = e;
+    }
+  }
+
   $('send').addEventListener('click', send);
+  $('read-text').addEventListener('click', () => read('text'));
+  $('read-csv').addEventListener('click', () => read('csv'));
   loadList();
 </script>
 </body>
