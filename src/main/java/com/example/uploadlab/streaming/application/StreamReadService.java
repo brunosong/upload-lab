@@ -9,7 +9,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
-import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -139,29 +138,6 @@ public class StreamReadService implements StreamReadUseCase {
 
         long elapsed() {
             return System.currentTimeMillis() - start;
-        }
-    }
-
-    /** 네트워크에서 지금까지 받은 바이트 수를 센다 */
-    private static class CountingInputStream extends FilterInputStream {
-        long count;
-
-        CountingInputStream(InputStream in) {
-            super(in);
-        }
-
-        @Override
-        public int read() throws IOException {
-            int b = super.read();
-            if (b != -1) count++;
-            return b;
-        }
-
-        @Override
-        public int read(byte[] b, int off, int len) throws IOException {
-            int n = super.read(b, off, len);
-            if (n > 0) count += n;
-            return n;
         }
     }
 }

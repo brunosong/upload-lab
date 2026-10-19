@@ -15,3 +15,6 @@ Thumbs.db
 
 # 테스트용 대용량 파일
 *.bin
+# docs/test-data/make_test_data.py 로 다시 만든다
+docs/test-data/list.csv
+docs/test-data/log.txt

@@ -54,6 +54,18 @@
   </section>
 
   <section>
+    <h2>5. CSV를 DB에 넣기 (H2)</h2>
+    위에서 고른 CSV를 받으면서 1000행씩 DB에 넣습니다. 헤더에 <b>path, size</b> 칸이 있어야 합니다.
+    넣은 행은 <a href="/h2-console" target="_blank">H2 콘솔</a>에서 <code>SELECT * FROM cdn_file</code>로 봅니다.
+    <br>
+    <button id="import">DB에 넣기</button>
+    <table>
+      <thead><tr><th>시작</th><th>원래 이름</th><th>상태</th><th>넣은 행</th><th>건너뛴 행</th><th>걸린 시간</th><th>실패 이유</th></tr></thead>
+      <tbody id="imports"></tbody>
+    </table>
+  </section>
+
+  <section>
     <h2>2. 방금 올린 결과</h2>
     <table>
       <tr><th>원래 이름</th><td id="r-name">-</td></tr>
@@ -102,15 +114,15 @@
   }
 
   // fetch 에는 업로드 진행률 이벤트가 없어서 XMLHttpRequest 를 쓴다
-  function uploadStream(file, onProgress, url = '/api/streaming/uploads') {
+  function uploadStream(file, onProgress, url = '/api/streaming/uploads', method = 'PUT') {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('PUT', url);
+      xhr.open(method, url);
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));   // 한글 이름 때문에 인코딩
 
       xhr.upload.onprogress = e => onProgress(e.loaded, e.total);
-      xhr.onload = () => xhr.status === 200
+      xhr.onload = () => xhr.status === 200 || xhr.status === 201
           ? resolve(JSON.parse(xhr.responseText))
           : reject('서버 응답 ' + xhr.status + ' ' + xhr.responseText);
       xhr.onerror = () => reject('네트워크 오류');
@@ -190,7 +202,46 @@
   $('send').addEventListener('click', send);
   $('read-text').addEventListener('click', () => read('text'));
   $('read-csv').addEventListener('click', () => read('csv'));
+
+  // CSV를 DB에 넣기. 보내는 방법은 같고 주소와 메서드(POST)만 다르다
+  async function importCsv() {
+    const file = $('file').files[0];
+    if (!file) { setStatus('파일을 먼저 고르세요.', 'error'); return; }
+
+    $('import').disabled = true;
+    try {
+      await uploadStream(file, (loaded, total) => {
+        $('bar').value = loaded / total;
+        setStatus(mb(loaded) + ' / ' + mb(total));
+      }, '/api/streaming/imports', 'POST');
+      setStatus('DB에 넣기 완료', 'done');
+    } catch (e) {
+      setStatus('실패: ' + e, 'error');
+    } finally {
+      $('import').disabled = false;
+      loadImports();   // 실패해도 FAILED 기록이 남는다
+    }
+  }
+
+  async function loadImports() {
+    const imports = await (await fetch('/api/streaming/imports')).json();
+    $('imports').innerHTML = '';
+    for (const i of imports) {
+      const sec = i.finishedAt ? ((new Date(i.finishedAt) - new Date(i.startedAt)) / 1000).toFixed(1) + '초' : '-';
+      const tr = document.createElement('tr');
+      [i.startedAt.replace('T', ' ').slice(0, 19), i.originalName, i.status,
+       i.savedRows.toLocaleString(), i.badRows.toLocaleString(), sec, i.error || ''].forEach(v => {
+        const td = document.createElement('td');
+        td.textContent = v;
+        tr.appendChild(td);
+      });
+      $('imports').appendChild(tr);
+    }
+  }
+
+  $('import').addEventListener('click', importCsv);
   loadList();
+  loadImports();
 </script>
 </body>
 </html>

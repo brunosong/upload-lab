@@ -17,6 +17,8 @@ CDN 스토리지 이관 작업에서 업체가 주는 1GB 안팎의 파일 목�
 - 메인 화면에서 "스트리밍 방식"과 "파일 쪼개는 방식" 중 하나를 골라 들어갑니다. 기능마다 페이지가 따로 있습니다.
 - 테스트: `mvnw test`
 - 올린 파일은 프로젝트 폴더의 `uploads/`에 쌓입니다.
+- CSV를 DB에 넣으면 H2 파일 DB `uploads/h2/labdb.mv.db`에 남습니다. http://localhost:8098/h2-console 에서 봅니다 (JDBC URL `jdbc:h2:file:./uploads/h2/labdb`, 사용자 `sa`, 비밀번호 없음).
+- 9장, 10장에 쓰는 테스트 데이터는 `docs/test-data/`에 있습니다. 큰 파일은 git에 없어서 `python make_test_data.py`로 만듭니다.
 - 업로드 기록을 어디에 남길지는 `application.properties`의 `lab.record.type`으로 고릅니다. `memory`(기본값)는 서버를 끄면 사라지고, `file`은 `uploads/records.jsonl`에 남습니다. 실행할 때 `mvnw spring-boot:run -Dspring-boot.run.arguments=--lab.record.type=file`로 바꿀 수도 있습니다.
 
 테스트용 1GB 파일은 Windows에서 이렇게 만듭니다. 내용은 전부 0입니다.
@@ -41,21 +43,32 @@ com.example.uploadlab
     │   ├── UploadedFile.java                    업로드 결과 한 건. 스프링을 모르는 순수 값
     │   ├── CsvRowReader.java                    CSV를 글자 하나씩 읽어 한 행씩 돌려줌 (9장)
     │   ├── TextReadResult.java                  텍스트를 받으면서 읽은 결과 (9장)
-    │   └── CsvReadResult.java                   CSV를 받으면서 읽은 결과 (9장)
+    │   ├── CsvReadResult.java                   CSV를 받으면서 읽은 결과 (9장)
+    │   ├── CsvImport.java                       CSV 한 번 넣기. IMPORTING → COMPLETED / FAILED (10장)
+    │   ├── CdnFileColumns.java                  헤더에서 path, size 위치를 찾고 행을 검사 (10장)
+    │   └── CdnFileRow.java                      DB에 넣을 한 행 (10장)
     ├── application/
     │   ├── port/in/StreamUploadUseCase.java     바깥이 이 기능에 시키는 일
     │   ├── port/in/StreamReadUseCase.java       받으면서 읽기. 저장하지 않음 (9장)
+    │   ├── port/in/CsvImportUseCase.java        받으면서 DB에 넣기 (10장)
     │   ├── port/out/FileStoragePort.java        어디에 저장할지 (구현은 어댑터)
     │   ├── port/out/UploadRecordPort.java       어디에 기록할지 (구현은 어댑터)
+    │   ├── port/out/ImportRecordPort.java       넣기 기록을 어디에 둘지 (10장)
+    │   ├── port/out/CdnFileRowPort.java         행을 어디에 넣고 지울지 (10장)
     │   ├── StreamUploadService.java             흐름만 담음. 디스크, 메모리를 직접 모름
-    │   └── StreamReadService.java               한 줄씩 읽고 로그로 남긴 뒤 버림 (9장)
+    │   ├── StreamReadService.java               한 줄씩 읽고 로그로 남긴 뒤 버림 (9장)
+    │   ├── CsvImportService.java                1000행씩 모아 넣고, 실패하면 넣은 행을 지움 (10장)
+    │   └── CountingInputStream.java             받은 바이트 수를 셈. 로그용 (9, 10장)
     └── adapter/
         ├── in/web/StreamUploadController.java   HTTP 요청을 유스케이스 호출로 바꿈
         ├── in/web/StreamReadController.java     /api/streaming/read/text, /csv (9장)
-        ├── in/web/StreamReadExceptionHandler.java   형식 오류를 400으로 바꿈 (9장)
+        ├── in/web/CsvImportController.java      /api/streaming/imports (10장)
+        ├── in/web/StreamReadExceptionHandler.java   형식 오류를 400으로 바꿈 (9, 10장)
         ├── out/storage/LocalDiskStorageAdapter.java     8KB씩 받아 디스크에 씀
         ├── out/record/InMemoryUploadRecordAdapter.java  기록을 메모리에 둠 (lab.record.type=memory)
-        └── out/record/FileUploadRecordAdapter.java      기록을 records.jsonl 에 둠 (lab.record.type=file)
+        ├── out/record/FileUploadRecordAdapter.java      기록을 records.jsonl 에 둠 (lab.record.type=file)
+        ├── out/db/JdbcImportRecordAdapter.java  넣기 기록을 csv_import 테이블에 둠 (10장)
+        └── out/db/JdbcCdnFileRowAdapter.java    행을 cdn_file 테이블에 batchUpdate 로 넣음 (10장)
 
 com.example.uploadlab
 └── chunked/                                     파일 쪼개는 방식 (이 폴더만 보면 다 있음)
@@ -81,8 +94,12 @@ com.example.uploadlab
 
 resources/static/
 ├── index.html                메인. 방식 고르기
-├── streaming/index.html      스트리밍 방식 화면
+├── streaming/index.html      스트리밍 방식 화면 (받으면서 읽기, DB에 넣기 포함)
 └── chunked/index.html        파일 쪼개는 방식 화면
+
+resources/schema.sql          시작할 때 H2에 csv_import, cdn_file 테이블을 만듦 (10장)
+
+docs/test-data/               테스트 데이터와 만드는 스크립트 (9, 10장)
 ```
 
 화면 파일은 스프링 규칙상 `resources/static` 아래에 있어야 해서 패키지 폴더 밖에 있습니다. 대신 기능 이름과 같은 폴더로 나눴습니다.
@@ -387,3 +404,82 @@ a.xlsx (ZIP)
 - **인코딩은 UTF-8 고정**: 한국어 엑셀의 기본 CSV 저장(CP949)으로 만든 파일은 한글이 깨집니다.
 - **로그를 줄마다 찍지 않음**: 1GB면 몇백만 줄이라 로그가 넘칩니다. 처음 5줄만 내용을, 그다음은 10만 줄마다 진행 상황만 찍습니다.
 - **테스트**: `CsvRowReaderTest`가 따옴표, 줄바꿈, BOM, 닫히지 않은 따옴표, 너무 긴 행을 확인합니다. `StreamReadServiceTest`는 100만 행 CSV를 배열 없이 그때그때 만들어 흘려 보냅니다.
+
+---
+
+## 10. 받으면서 DB에 넣기 (H2)
+
+9장에서 로그를 찍던 자리에서 진짜로 DB에 넣습니다. 파일은 디스크 어디에도 저장하지 않습니다. CSV 헤더에 `path`, `size` 칸이 있어야 합니다. 순서는 상관없고 다른 칸은 무시합니다.
+
+    curl -X POST -T docs/test-data/list.csv -H "Content-Type: application/octet-stream" -H "X-File-Name: list.csv" http://localhost:8098/api/streaming/imports
+    curl http://localhost:8098/api/streaming/imports      넣기 기록 목록 (최신순)
+
+스트리밍 화면의 "5. CSV를 DB에 넣기"에서도 됩니다. 넣은 행은 H2 콘솔에서 `SELECT * FROM cdn_file`로 봅니다.
+
+```
+POST /api/streaming/imports
+  [CsvImportController]  request.getInputStream()
+  [CsvImportService]
+     1. csv_import 에 IMPORTING 으로 기록
+     2. CsvRowReader 로 한 행씩 읽음 → CdnFileColumns 가 path, size 검사 → 틀린 행은 건너뛰고 셈
+     3. 1000행이 모이면 cdn_file 에 batchUpdate. DB 연결은 이때만 잠깐 빌림
+     4. 끝나면 COMPLETED
+        실패하면(형식 오류, 업로드 끊김, DB 오류) 그 import_id 로 넣은 행을 지우고 FAILED
+```
+
+| 테이블 | 한 줄이 뜻하는 것 |
+|---|---|
+| `csv_import` | CSV 한 번 넣기. 상태, 넣은 행 수, 건너뛴 행 수, 실패 이유, 시작/끝 시각 |
+| `cdn_file` | CSV 한 행. `import_id`로 어느 CSV에서 왔는지 묶음 |
+
+### 트랜잭션 하나로 묶지 않는 이유
+
+- **묶으면**: 업로드가 끝날 때까지(느린 사용자는 몇 분) DB 연결 하나를 붙잡습니다. HikariCP 기본 풀은 10개라서 동시 업로드 10개면 다른 API가 DB를 못 씁니다. 실패하면 롤백 한 번으로 깔끔하게 끝나는 건 장점입니다.
+- **안 묶으면(이 lab)**: 1000행마다 연결을 빌렸다가 바로 돌려줍니다. 대신 중간에 실패하면 이미 들어간 행이 남습니다. 그래서 `import_id`로 찾아 지우고(보상), 기록을 FAILED로 남깁니다. 지우는 동안에는 일부 행이 잠깐 보일 수 있습니다.
+
+### 확인해 본 결과
+
+2026-10-19에 힙을 64MB로 제한한 서버에 `docs/test-data/list.csv`(60MB, 100만 4행)를 초당 20MB로 보냈습니다.
+
+```
+15:28:03.822 INFO [import fc1978d2] 시작: list.csv
+15:28:03.823 INFO [import fc1978d2] 헤더 확인: path=0번째 칸, size=1번째 칸 (0부터), 전체 3칸
+15:28:03.825 WARN [import fc1978d2] 4번째 행 건너뜀: 칸이 2개입니다 (헤더는 3개) [/img/d.jpg, 400]
+15:28:03.868 INFO [import fc1978d2] 1,000행 넣음, 받은 0.1 MB, 0.0초
+15:28:04.431 INFO [import fc1978d2] 100,000행 넣음, 받은 5.6 MB, 0.6초
+...
+15:28:07.569 INFO [import fc1978d2] 끝: 1,000,003행 넣음, 건너뛴 행 1개, 받은 57.8 MB, 3.7초
+```
+
+| 경우 | 결과 |
+|---|---|
+| 정상 | 201, COMPLETED, 1,000,003행 넣음, 건너뛴 행 1개. 3.7초 |
+| 업로드 도중 curl을 2초 만에 끊음 | FAILED. 그때까지 넣은 176,000행을 지움. 실패 이유는 `java.io.EOFException` |
+| 헤더에 `size`가 없음 (`docs/test-data/nosize.csv`) | 400 `{"message":"헤더에 path, size 칸이 있어야 합니다: [path, bytes]"}`, FAILED |
+
+- 0.1MB만 받았을 때 첫 1000행이 이미 DB에 들어갔습니다.
+- 끊긴 업로드는 curl이 끊고 2초쯤 뒤에 서버가 알아챘습니다. 톰캣이 다음 `read()`에서 연결이 닫힌 걸 보고 예외를 던질 때입니다.
+
+### JPA 대신 JdbcTemplate을 쓴 이유
+
+JPA로 못 하는 건 아니지만, 대량 입력에는 기본 동작이 불리합니다. 아래는 실험한 게 아니라 일반적인 동작입니다.
+
+- **id가 `IDENTITY`(AUTO_INCREMENT)면 묶어 보내지 못합니다.** Hibernate가 저장하자마자 id를 알아야 해서 INSERT를 하나씩 바로 실행합니다. `saveAll()`로 100만 개를 넘겨도 100만 번 왕복합니다.
+- **영속성 컨텍스트에 엔티티가 쌓입니다.** 한 트랜잭션에서 저장한 엔티티를 1차 캐시가 모두 들고 있어서, 스트리밍으로 아낀 메모리가 다시 찹니다.
+- **JPA로 하려면** id를 `SEQUENCE`로 바꾸고, `hibernate.jdbc.batch_size`와 `order_inserts`를 켜고, 1000개마다 `flush()`와 `clear()`를 부르거나 `StatelessSession`을 씁니다. JPA의 편의 기능을 거의 다 끄는 셈입니다.
+
+보통은 일반 화면의 저장과 조회는 JPA로, 대량 입력만 JdbcTemplate으로 나눠 씁니다. 더 크면 DB 자체 기능(MySQL `LOAD DATA`, PostgreSQL `COPY`)을 씁니다. MySQL은 JDBC URL에 `rewriteBatchedStatements=true`가 있어야 batch가 실제로 여러 행 INSERT로 묶입니다.
+
+### 코드에서 볼 부분
+
+- **`JdbcCdnFileRowAdapter.saveAll()`**: `batchUpdate`로 INSERT 1000개를 한 번에 보냅니다.
+- **`CsvImport`**: 상태가 바뀔 때마다 새 값을 만듭니다. 이미 끝난 import를 다시 끝내려 하면 예외입니다.
+- **`CdnFileColumns`**: 틀린 행이면 이유를 담은 `IllegalArgumentException`을 던지고, 서비스는 그걸 세고 건너뜁니다. 처음 5개만 로그에 남깁니다.
+- **시각을 밀리초로 자름**: Windows의 `LocalDateTime.now()`는 100나노초 단위인데 H2 `TIMESTAMP`는 마이크로초까지만 저장합니다. 그대로 두면 응답으로 돌려준 값과 DB에서 다시 읽은 값이 다릅니다. 테스트가 이걸 잡았습니다.
+- **테스트**: `CsvImportServiceTest`는 `@JdbcTest`로 메모리 H2에 진짜 JDBC 어댑터를 끼워 돌립니다. 1000행 단위를 넘는 경우, 1000행이 들어간 뒤 끊긴 경우(넣은 행이 0이 되는지), 헤더가 틀린 경우를 확인합니다. `CdnFileColumnsTest`는 행 검사를 확인합니다.
+
+### 아직 없는 것
+
+- **동시 업로드 제한**: 여러 명이 동시에 넣으면 각자 스레드와 DB 연결을 번갈아 씁니다. 동시에 몇 개까지 받을지 제한하는 코드는 없습니다.
+- **같은 파일 두 번 넣기**: 같은 CSV를 두 번 올리면 행이 두 벌 들어갑니다. `import_id`가 달라서 구분은 됩니다.
+- **실패 이유 메시지**: 업로드가 끊기면 실패 이유가 `java.io.EOFException`으로만 남습니다.
