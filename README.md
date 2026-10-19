@@ -90,7 +90,10 @@ com.example.uploadlab
 com.example.uploadlab
 └── multipart/                                   비교 실험. MultipartFile로 받으면 어떻게 되는지 (7장)
     ├── MultipartExperimentController.java       /transfer (transferTo), /bytes (getBytes)
-    └── ArrivalTimeFilter.java                   요청 도착 시각을 남겨 컨트롤러가 기다린 시간을 잼
+    ├── ArrivalTimeFilter.java                   요청 도착 시각을 남겨 컨트롤러가 기다린 시간을 잼
+    └── ExcelHeapExperimentController.java       엑셀을 세 가지 방법으로 읽고 힙을 잼 (11장)
+
+test/.../multipart/MakeTestExcel.java            11장 실험용 list.xlsx 를 POI로 만드는 main
 
 resources/static/
 ├── index.html                메인. 방식 고르기
@@ -332,7 +335,7 @@ a.xlsx (ZIP)
 
 - ZIP의 목차가 파일 맨 끝에 있습니다. 앞에서부터 순서대로 읽는 방법(`ZipInputStream`)도 있어서 절대적인 벽은 아닙니다.
 - 더 큰 문제는 행 데이터와 글자가 따로 있다는 점입니다. `sharedStrings.xml`이 시트보다 뒤에 오는 경우가 흔해서, 행을 받아도 글자를 알려면 끝까지 기다려야 합니다.
-- 예전 형식인 `.xls`는 파일 안을 이리저리 건너뛰며 읽는 구조라 더 안 됩니다.
+- 예전 형식인 `.xls`는 파일 안을 이리저리 건너뛰며 읽는 구조라 받는 중에는 더 안 됩니다. 다 받은 뒤에는 POI의 HSSF 이벤트 API(`HSSFEventFactory`)로 레코드를 하나씩 읽을 수 있지만, 코드가 번거롭고 쓰는 사람이 드뭅니다.
 
 그래서 엑셀은 두 단계로 나눕니다. 스트리밍으로 디스크에 받은 다음(메모리 8KB), 저장된 파일을 행 단위로 읽습니다.
 
@@ -346,7 +349,9 @@ a.xlsx (ZIP)
 | gzip으로 압축한 CSV | 가능 (`GZIPInputStream`으로 감쌈) | 가능 |
 | 큰 JSON 배열 | 가능 (Jackson `JsonParser` 같은 스트리밍 파서) | 가능 |
 | xlsx | 사실상 어려움 (다 받은 뒤에 읽기) | 가능 (SAX / 스트리밍 리더) |
-| xls | 불가능 | 어려움 |
+| xls | 불가능 | 가능하지만 번거로움 (HSSF 이벤트 API) |
+
+엑셀을 읽는 방법에 따라 힙이 얼마나 다른지는 11장에서 실제로 쟀습니다.
 
 1GB 목록 파일이라면 업체에 CSV나 TSV로 달라고 하는 게 가장 확실합니다. 엑셀은 시트 하나에 약 104만 행까지라는 제한도 있습니다.
 
@@ -483,3 +488,85 @@ JPA로 못 하는 건 아니지만, 대량 입력에는 기본 동작이 불리�
 - **동시 업로드 제한**: 여러 명이 동시에 넣으면 각자 스레드와 DB 연결을 번갈아 씁니다. 동시에 몇 개까지 받을지 제한하는 코드는 없습니다.
 - **같은 파일 두 번 넣기**: 같은 CSV를 두 번 올리면 행이 두 벌 들어갑니다. `import_id`가 달라서 구분은 됩니다.
 - **실패 이유 메시지**: 업로드가 끊기면 실패 이유가 `java.io.EOFException`으로만 남습니다.
+
+---
+
+## 11. 비교 실험: 엑셀을 읽는 세 가지 방법과 힙
+
+multipart로 받은 엑셀은 이미 톰캣 임시 폴더(디스크)에 있습니다(7장). 내용을 읽으려고 파일 전체를 메모리에 올릴 필요는 없고, **어떻게 읽느냐**에 따라 힙이 크게 달라집니다.
+
+    curl -F "file=@docs/test-data/list.xlsx" http://localhost:8098/api/multipart/excel/workbook-stream
+    curl -F "file=@docs/test-data/list.xlsx" http://localhost:8098/api/multipart/excel/workbook-file
+    curl -F "file=@docs/test-data/list.xlsx" http://localhost:8098/api/multipart/excel/sax
+
+| 주소 | 읽는 방법 | ZIP 압축 해제 | 셀 객체 |
+|---|---|---|---|
+| `/workbook-stream` | `new XSSFWorkbook(file.getInputStream())` | 전부 메모리에 | 전부 메모리에 |
+| `/workbook-file` | 내 임시 파일로 옮긴 뒤 `new XSSFWorkbook(OPCPackage.open(file, READ))` | 필요한 부분만 | 전부 메모리에 |
+| `/sax` | 내 임시 파일로 옮긴 뒤 `XSSFReader` + `XSSFSheetXMLHandler` (SAX) | 필요한 부분만 | 지금 읽는 셀만 |
+
+- `file.getInputStream()` 자체는 임시 파일을 읽는 통로라 메모리를 거의 안 씁니다. InputStream은 앞에서부터 한 번만 읽을 수 있는데 ZIP은 이리저리 오가며 읽어야 해서, **POI가 ZIP 안의 파일들을 압축을 푼 채 전부 메모리에 담아 둡니다.** 이게 첫 번째 겹입니다.
+- `XSSFWorkbook`은 File로 열어도 **모든 행과 셀을 객체로 만들어 들고 있습니다.** `getRow(5).getCell(3)`처럼 아무 데나 꺼내 볼 수 있게 하려는 것입니다. 이게 두 번째 겹이고 훨씬 큽니다.
+- SAX는 시트 XML을 앞에서부터 흘려 읽으면서 셀이 하나 지나갈 때마다 내 코드를 부릅니다. 셀을 쌓아 두지 않습니다. 대신 글자 사전(`sharedStrings.xml`)은 메모리에 올라갑니다.
+- `MultipartFile`은 톰캣 임시 파일 경로를 알려 주지 않아서, File로 열려면 `transferTo`로 내 임시 파일에 옮깁니다.
+- excel-streaming-reader, FastExcel 같은 라이브러리도 SAX 방식으로 읽습니다. 이 실험은 라이브러리를 더 넣지 않고 POI에 있는 SAX를 씁니다.
+
+세 방법 모두 첫 시트의 모든 셀을 글자로 바꿔 읽습니다(`DataFormatter`). 하는 일은 같고 읽는 방법만 다릅니다. 응답의 힙 값은 이렇습니다.
+
+- `heapRetainedMb`: 다 읽고 workbook(또는 글자 사전)을 아직 쥐고 있을 때, GC를 한 다음 잰 값. **진짜로 붙잡고 있는 양**입니다.
+- `heapPeakMb`: 읽는 동안 10ms마다 잰 값 중 가장 큰 값. 아직 안 치운 쓰레기도 들어 있어서 들쭉날쭉합니다.
+
+### 실험 파일
+
+`docs/test-data/list.xlsx`: 헤더 `path,size,memo,type` + 20만 행, 셀 80만 개. 파일은 5.9MB이고, 압축을 풀면 시트 XML 34MB와 글자 사전 16MB입니다. 만드는 방법은 `docs/test-data/README.md`에 있습니다.
+
+처음에 파이썬 openpyxl로 만들었더니 글자가 셀 안에 바로 들어가서(`inlineStr`) `sharedStrings.xml`이 없었습니다. 엑셀이 만든 파일과 달라서 POI `SXSSFWorkbook`(글자 사전 사용)으로 만들었습니다.
+
+### 확인해 본 결과
+
+2026-10-19에 쟀습니다.
+
+힙 제한 없음 (최대 15GB):
+
+| 방법 | 붙잡고 있는 힙 | 읽는 동안 최대 | 걸린 시간 |
+|---|---|---|---|
+| `XSSFWorkbook(InputStream)` | **907MB** | 1462MB | 5.9초 |
+| `XSSFWorkbook(File)` | **851MB** | 1781MB | 4.1초 |
+| SAX + File | **48MB** | 369MB | 1.6초 |
+
+- 5.9MB 엑셀을 `XSSFWorkbook`으로 읽으면 힙을 약 900MB(파일의 150배) 붙잡습니다.
+- 두 `XSSFWorkbook`의 차이 56MB는 압축을 푼 크기(34MB + 16MB)와 거의 같습니다. InputStream으로 열 때만 생기는 첫 번째 겹입니다.
+- SAX의 48MB는 서버 기본 사용량(약 17MB)에 글자 사전이 더해진 양입니다.
+
+힙을 줄여서 (방법마다 서버를 새로 띄움):
+
+| 방법 | `-Xmx1g` | `-Xmx256m` | `-Xmx64m` |
+|---|---|---|---|
+| `XSSFWorkbook(InputStream)` | 성공 (895MB) | OOM, **그 뒤 서버 먹통** | OOM, 서버 살아 있음 |
+| `XSSFWorkbook(File)` | 성공 (846MB) | OOM, **그 뒤 서버 먹통** | OOM, **그 뒤 서버 먹통** |
+| SAX + File | 성공 (49MB) | 성공 | 성공 |
+
+"서버 먹통"은 OOM 응답이 온 뒤 다른 API(`GET /api/streaming/uploads`)를 불렀을 때 10초 안에 응답이 없었다는 뜻입니다.
+
+### OOM이 서버 전체를 멈출 수 있다
+
+7장 `getBytes()` 실험에서는 OOM이 나도 그 요청만 500으로 실패하고 서버는 살아 있었습니다. 이번에는 OOM 뒤에 서버가 요청을 받지 못했습니다. 서버 로그를 보면 톰캣이 연결을 받아 넘기는 스레드가 죽어 있었습니다.
+
+```
+Exception: java.lang.OutOfMemoryError thrown from the UncaughtExceptionHandler in thread "http-nio-18098-Poller"
+ERROR ... o.a.coyote.http11.Http11NioProtocol : Error processing async timeouts
+```
+
+메모리가 차는 방식이 다릅니다.
+
+- **큰 배열 하나를 한 번에 요청하다 실패**(`getBytes()`, 64MB에서의 `XSSFWorkbook(InputStream)`): 그 요청 스레드만 OOM을 맞습니다. 서버는 살아남습니다.
+- **작은 객체들이 힙을 조금씩 채움**(`XSSFWorkbook`이 셀 객체를 만드는 중): 힙이 꽉 찬 순간 메모리를 조금이라도 달라고 한 다른 스레드도 OOM을 맞습니다. 톰캣 내부 스레드가 죽으면 프로세스는 살아 있는데 요청을 못 받는 상태가 됩니다.
+
+그래서 OOM이 나면 그 요청만 실패할 거라고 기대하면 안 됩니다. 운영에서는 `-XX:+ExitOnOutOfMemoryError`로 OOM이 나면 프로세스를 끝내고 다시 띄우게 하는 경우가 많습니다. 이 옵션은 일반적인 권장 사항이고 이 실험에서 돌려 보지는 않았습니다.
+
+### 정리
+
+- 큰 엑셀은 `XSSFWorkbook`으로 읽지 않습니다. SAX나 스트리밍 리더로 한 행씩 읽고, 10장처럼 1000행씩 DB에 넣습니다.
+- 열 때는 InputStream이 아니라 File로 엽니다.
+- 글자 사전은 메모리에 올라갑니다. 서로 다른 글자가 아주 많은 파일이면 이것도 커집니다.
+- 압축 폭탄(작은 xlsx가 풀면 몇 GB가 되는 파일)은 POI가 기본으로 막습니다(`ZipSecureFile`). 이 설정을 끄지 않습니다.

@@ -8,11 +8,16 @@ README 9장(받으면서 읽기), 10장(CSV를 DB에 넣기)을 확인할 때 �
 | `log.txt` | 약 80MB | 로그 형식 100만 줄. 줄바꿈 `\n` | 올리지 않음 |
 | `nosize.csv` | 20 bytes | 헤더에 `size`가 없는 CSV. DB에 넣기가 400으로 거절되는지 볼 때 | 올림 |
 | `make_test_data.py` | | `list.csv`, `log.txt`를 만드는 스크립트 | 올림 |
+| `list.xlsx` | 약 5.9MB | 엑셀 힙 비교 실험(README 11장)용. 헤더 `path,size,memo,type` + 20만 행. 글자는 엑셀처럼 `sharedStrings.xml`에 모음 (압축 풀면 시트 34MB, 글자 사전 16MB) | 올리지 않음 |
 
-큰 두 파일은 `.gitignore`에 넣었습니다. 없으면 이 폴더에서 다시 만듭니다. 같은 내용이 바이트 단위로 똑같이 나옵니다.
+큰 파일은 `.gitignore`에 넣었습니다. 없으면 다시 만듭니다. `list.csv`, `log.txt`는 바이트 단위로 똑같이 나옵니다.
 
     cd docs\test-data
     python make_test_data.py
+
+`list.xlsx`는 POI로 만듭니다 (프로젝트 폴더에서). 파이썬 openpyxl은 글자를 셀 안에 바로 써서(`inlineStr`) 엑셀이 만든 파일과 달라지기 때문입니다.
+
+    mvnw -q test-compile exec:java -Dexec.classpathScope=test -Dexec.mainClass=com.example.uploadlab.multipart.MakeTestExcel -Dexec.args="docs/test-data/list.xlsx 200000"
 
 `list.csv` 앞부분에는 일부러 까다로운 행을 넣었습니다.
 
