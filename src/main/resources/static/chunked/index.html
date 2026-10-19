@@ -5,16 +5,119 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>파일 쪼개는 방식</title>
 <style>
-  body { margin:0; font:14px/1.6 -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; background:#f7f7f5; color:#1d1d1b; }
-  main { padding:20px; max-width:720px; }
-  a { color:#2f5d8a; }
+  :root { --bg:#f7f7f5; --card:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e3e3de; --accent:#2f5d8a; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.6 -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); background:var(--card); }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; color:var(--muted); }
+  header a { color:var(--accent); }
+  main { padding:16px 20px; max-width:960px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:16px; }
+  section h2 { margin:0 0 8px; font-size:14px; }
+  button { margin-top:8px; padding:6px 12px; border:1px solid var(--accent); background:var(--accent); color:#fff; border-radius:4px; cursor:pointer; font:inherit; }
+  progress { width:100%; height:14px; margin-top:10px; }
+  pre { background:#f3f3f0; padding:10px; border-radius:4px; overflow:auto; font-size:12px; margin:0; }
 </style>
 </head>
 <body>
-<main>
-  <p><a href="/">처음으로</a></p>
+<header>
   <h1>파일 쪼개는 방식</h1>
-  <p>아직 만들지 않았습니다. 다음 단계에서 <code>chunked</code> 패키지로 따로 만듭니다.</p>
+  <p><a href="/">처음으로</a> &nbsp; 파일을 조각으로 잘라 여러 번 보내고, 서버가 마지막에 합칩니다.</p>
+</header>
+<main>
+
+  <section>
+    <h2>파일 고르고 보내기</h2>
+    <input type="file" id="file">
+    <br>
+    <button id="send">보내기</button>
+    <progress id="bar" value="0" max="1"></progress>
+  </section>
+
+  <section>
+    <h2>보낸 요청 기록</h2>
+    <pre id="log"></pre>
+  </section>
+
 </main>
+
+<script>
+  // 화면에 한 줄 남긴다
+  function log(text) {
+    document.getElementById('log').textContent += text + '\n';
+  }
+
+  // 서버가 에러를 주면 {"message": "..."} 에서 이유를 꺼내 던진다
+  async function readJson(res) {
+    const data = await res.json();
+    if (!res.ok) throw new Error(res.status + ' ' + (data.message || data.error));
+    return data;
+  }
+
+
+  // ① 시작: 파일 이름과 크기만 알린다. 서버가 uploadId, 조각 크기, 조각 개수를 정해 준다
+  async function startUpload(file) {
+    const res = await fetch('/api/chunked/uploads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileName: file.name, totalSize: file.size })
+    });
+    return readJson(res);
+  }
+
+  // ② 조각: 조각 하나를 번호와 함께 보낸다
+  async function sendChunk(uploadId, index, chunk) {
+    const res = await fetch('/api/chunked/uploads/' + uploadId + '/chunks/' + index, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: chunk
+    });
+    return readJson(res);
+  }
+
+  // ③ 완료: 다 보냈으니 합치라고 한다
+  async function completeUpload(uploadId) {
+    const res = await fetch('/api/chunked/uploads/' + uploadId + '/complete', {
+      method: 'POST'
+    });
+    return readJson(res);
+  }
+
+
+  // 보내기 버튼을 누르면 ① → ② 여러 번 → ③ 순서로 부른다
+  async function upload() {
+    const file = document.getElementById('file').files[0];
+    const bar = document.getElementById('bar');
+    if (!file) { log('파일을 먼저 고르세요.'); return; }
+
+    try {
+      // ①
+      const session = await startUpload(file);
+      log('① 시작  uploadId=' + session.uploadId
+          + '  조각 크기=' + session.chunkSize + '  조각 개수=' + session.totalChunks);
+
+      // ②
+      for (let i = 0; i < session.totalChunks; i++) {
+        const start = i * session.chunkSize;
+        const end = start + session.chunkSize;           // 마지막 조각은 파일 끝을 넘지만 slice가 알아서 자른다
+        const chunk = file.slice(start, end);            // 파일을 읽는 게 아니라 "여기부터 여기까지"만 가리킨다
+
+        const res = await sendChunk(session.uploadId, i, chunk);
+        log('② 조각 ' + i + '  ' + chunk.size + ' 바이트 보냄  → 서버가 받은 조각 ' + res.receivedCount + '/' + res.totalChunks);
+        bar.value = res.receivedCount / res.totalChunks;
+      }
+
+      // ③
+      const done = await completeUpload(session.uploadId);
+      log('③ 완료  ' + done.originalName + '  ' + done.size + ' 바이트  sha256=' + done.sha256);
+
+    } catch (e) {
+      log('실패: ' + e.message);
+    }
+  }
+
+  document.getElementById('send').addEventListener('click', upload);
+</script>
 </body>
 </html>
