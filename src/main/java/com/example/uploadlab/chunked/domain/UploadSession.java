@@ -1,7 +1,9 @@
 package com.example.uploadlab.chunked.domain;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.List;
 
 /**
  * 조각 업로드 한 건의 진행 상태.
@@ -76,6 +78,33 @@ public class UploadSession {
     public void markReceived(int index, long size) {
         checkCanReceive(index, size);
         received.set(index);
+    }
+
+    public boolean isAllReceived() {
+        return received.cardinality() == totalChunks;
+    }
+
+    /** 아직 안 온 조각 번호 */
+    public List<Integer> missingChunks() {
+        List<Integer> missing = new ArrayList<>();
+        for (int i = received.nextClearBit(0); i < totalChunks; i = received.nextClearBit(i + 1)) {
+            missing.add(i);
+        }
+        return missing;
+    }
+
+    /** 완료해도 되는지만 본다. 상태는 바꾸지 않는다 */
+    public void checkCanComplete() {
+        checkUploading();
+        if (!isAllReceived()) {
+            throw new IllegalStateException("아직 안 온 조각이 있습니다: " + missingChunks());
+        }
+    }
+
+    /** 완료로 바꾼다. 이후로는 조각을 받지 않고, 다시 완료할 수도 없다 */
+    public void complete() {
+        checkCanComplete();
+        status = Status.COMPLETED;
     }
 
     private void checkIndex(int index) {

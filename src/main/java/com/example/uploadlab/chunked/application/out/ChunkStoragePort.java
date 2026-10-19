@@ -15,4 +15,14 @@ public interface ChunkStoragePort {
 
     /** 임시 파일을 지운다. 전에 확정한 같은 번호 조각은 건드리지 않는다 */
     void discard(String uploadId, int index) throws IOException;
+
+    /** 0.part, 1.part … 를 번호 순서대로 이어 붙여 파일 하나로 만든다. 붙이면서 SHA-256을 계산한다 */
+    AssembledFile assemble(String uploadId, int totalChunks) throws IOException;
+
+    /** 조각 폴더를 통째로 지운다 */
+    void deleteChunks(String uploadId) throws IOException;
+
+    /** 합친 파일의 크기와 해시 */
+    record AssembledFile(long size, String sha256) {
+    }
 }

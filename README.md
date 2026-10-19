@@ -4,7 +4,7 @@ CDN 스토리지 이관 작업에서 업체가 주는 1GB 안팎의 파일 목�
 
 관련 위키 문서: `D:\WIKI\브루노송\CDN 스토리지 이관\대용량 목록 파일 처리.md`
 
-지금은 스트리밍 방식 하나만 있습니다. 파일 쪼개는 방식(조각 업로드)은 다음 단계에서 `chunked` 패키지로 따로 만듭니다.
+방식은 두 가지입니다. 스트리밍 방식(`streaming` 패키지)과 파일 쪼개는 방식(`chunked` 패키지)입니다.
 
 ---
 
@@ -50,10 +50,27 @@ com.example.uploadlab
         ├── out/record/InMemoryUploadRecordAdapter.java  기록을 메모리에 둠 (lab.record.type=memory)
         └── out/record/FileUploadRecordAdapter.java      기록을 records.jsonl 에 둠 (lab.record.type=file)
 
+com.example.uploadlab
+└── chunked/                                     파일 쪼개는 방식 (이 폴더만 보면 다 있음)
+    ├── domain/
+    │   ├── UploadSession.java                   업로드 한 건의 진행 상태. 몇 번 조각을 받았는지, 다 모였는지 판단
+    │   └── CompletedUpload.java                 합친 결과 한 건
+    ├── application/
+    │   ├── in/ChunkUploadUseCase.java           시작, 조각 받기, 완료
+    │   ├── out/UploadSessionPort.java           세션을 어디에 둘지
+    │   ├── out/ChunkStoragePort.java            조각을 어디에 쓰고 어떻게 합칠지
+    │   ├── ChunkUploadService.java              흐름만 담음
+    │   └── UploadSessionNotFoundException.java
+    └── adapter/
+        ├── in/web/ChunkUploadController.java          HTTP 요청을 유스케이스 호출로 바꿈
+        ├── in/web/ChunkUploadExceptionHandler.java    예외를 400 / 404 / 409 로 바꿈
+        ├── out/session/InMemoryUploadSessionAdapter.java   세션을 메모리에 둠
+        └── out/storage/LocalDiskChunkStorageAdapter.java   조각을 디스크에 쓰고 합침
+
 resources/static/
 ├── index.html                메인. 방식 고르기
 ├── streaming/index.html      스트리밍 방식 화면
-└── chunked/index.html        파일 쪼개는 방식 화면 (아직 안 만듦)
+└── chunked/index.html        파일 쪼개는 방식 화면
 ```
 
 화면 파일은 스프링 규칙상 `resources/static` 아래에 있어야 해서 패키지 폴더 밖에 있습니다. 대신 기능 이름과 같은 폴더로 나눴습니다.
@@ -146,4 +163,52 @@ curl로 직접 올릴 때는 `-T`를 씁니다. `--data-binary @파일`은 curl�
 - 요청 하나가 수 분 걸려서 중간 장비 설정에 걸립니다. nginx `client_max_body_size` 기본값은 1MB이고, 프록시 타임아웃, Ingress 본문 크기 제한도 늘려야 합니다.
 - 이 lab은 서버에 바로 붙기 때문에 위 제한이 없습니다. `application.properties`의 `server.tomcat.connection-timeout`만 넉넉히 늘려 뒀습니다.
 
-이 약점을 푸는 게 다음 단계인 파일 쪼개는 방식입니다.
+이 약점을 푸는 게 파일 쪼개는 방식입니다.
+
+---
+
+## 6. 파일 쪼개는 방식의 흐름
+
+프론트는 파일을 서버가 정한 크기(5MB, `lab.chunked.chunk-size`)로 잘라서 조각마다 요청을 하나씩 보냅니다.
+
+```
+[브라우저]                                              [서버]
+① POST /api/chunked/uploads                            start
+   {"fileName":"a.bin","totalSize":12000000}            UUID 만들고 UploadSession 저장, 조각 개수 계산
+   ← 201 {"uploadId":"…","chunkSize":5242880,"totalChunks":3}
+
+② for (i = 0; i < totalChunks; i++)                    receiveChunk
+     chunk = file.slice(i * chunkSize, …)               {i}.part.tmp 에 씀 (조각 크기 + 1 바이트까지만 읽음)
+     PUT /api/chunked/uploads/{uploadId}/chunks/{i}     → 크기 확인 → {i}.part 로 이름 바꿈 → 받았다고 기록
+     ← 200 {"index":i,"receivedCount":…,"totalChunks":3}
+
+③ POST /api/chunked/uploads/{uploadId}/complete        complete
+   ← 200 {"size":…,"sha256":"…", …}                     빠진 조각 확인 → 0.part, 1.part … 순서대로 붙임
+                                                        (붙이면서 SHA-256 계산) → 조각 폴더 지움
+```
+
+디스크에는 이렇게 남습니다.
+
+```
+uploads/chunked/{uploadId}/0.part      받는 중인 조각들. 완료하면 폴더째 지움
+uploads/chunked-{uploadId}.dat         합친 결과 (streaming-{id}.dat 와 같은 자리)
+```
+
+### 코드에서 볼 부분
+
+- **조각 크기는 서버가 정함**: 클라이언트는 시작 응답으로 받은 크기대로 자르기만 합니다. 조각 개수도 서버가 계산합니다.
+- **`file.slice()`는 파일을 읽지 않음**: "여기부터 여기까지"라는 표시만 만듭니다. 실제로 읽는 건 `fetch`로 보낼 때라서, 1GB 파일이어도 브라우저 메모리에는 조각 하나만 올라갑니다.
+- **임시 파일 → 확정**: 조각은 `.tmp`에 먼저 쓰고 크기가 맞을 때만 이름을 바꿉니다. 망가진 조각이 다시 와도 전에 제대로 받은 같은 번호 조각을 덮어쓰지 않습니다.
+- **같은 번호가 다시 와도 안전**: 덮어쓰고 한 번으로 셉니다. 끊겨서 다시 보내도 결과가 같습니다.
+- **`uploadId` 형식 검사**: 임시 폴더 이름이 되기 때문에, 컨트롤러에서 UUID 형식이 아니면 400으로 막습니다.
+- **오류 응답**: 잘못된 입력은 400, 모르는 `uploadId`는 404, 빠진 조각이 있는데 완료하거나 이미 끝난 업로드면 409입니다. 이유는 `{"message": "..."}`로 줍니다.
+
+### 확인해 본 결과
+
+2026-10-19에 50,000,000 bytes 랜덤 데이터를 화면 스크립트로 보냈습니다. 조각 10개(5MB × 9 + 2.8MB)가 갔고, 합친 파일의 SHA-256이 원본과 같았습니다. 완료 후 조각 폴더는 비었습니다.
+
+### 아직 없는 것
+
+- **이어 올리기**: 서버는 `missingChunks()`로 빠진 조각을 알지만, 그걸 화면에 알려 주는 API가 아직 없습니다.
+- **병렬 전송**: 조각을 하나씩 순서대로 보냅니다. 같은 번호 조각이 동시에 오면 같은 `.tmp`를 같이 쓰게 됩니다.
+- **세션 정리**: 세션이 메모리에만 있어서, 서버를 재시작하면 진행 중이던 업로드는 404가 됩니다. 완료하지 않고 버려진 조각 폴더를 지우는 일도 아직 없습니다.

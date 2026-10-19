@@ -1,6 +1,7 @@
 package com.example.uploadlab.chunked.adapter.in.web;
 
 import com.example.uploadlab.chunked.application.in.ChunkUploadUseCase;
+import com.example.uploadlab.chunked.domain.CompletedUpload;
 import com.example.uploadlab.chunked.domain.UploadSession;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
@@ -31,6 +32,11 @@ public class ChunkUploadController {
                                      HttpServletRequest request) throws IOException {
         UploadSession session = useCase.receiveChunk(checkId(uploadId), index, request.getInputStream());
         return ChunkResponse.of(index, session);
+    }
+
+    @PostMapping("/uploads/{uploadId}/complete")
+    public CompletedUpload complete(@PathVariable String uploadId) throws IOException {
+        return useCase.complete(checkId(uploadId));
     }
 
     private String checkId(String uploadId) {

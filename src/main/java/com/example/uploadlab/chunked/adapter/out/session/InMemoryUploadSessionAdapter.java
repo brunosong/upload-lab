@@ -23,6 +23,6 @@ public class InMemoryUploadSessionAdapter implements UploadSessionPort {
 
     @Override
     public Optional<UploadSession> findById(String uploadId) {
-        return Optional.of(sessions.get(uploadId));
+        return Optional.ofNullable(sessions.get(uploadId));
     }
 }
