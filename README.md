@@ -67,6 +67,11 @@ com.example.uploadlab
         ├── out/session/InMemoryUploadSessionAdapter.java   세션을 메모리에 둠
         └── out/storage/LocalDiskChunkStorageAdapter.java   조각을 디스크에 쓰고 합침
 
+com.example.uploadlab
+└── multipart/                                   비교 실험. MultipartFile로 받으면 어떻게 되는지 (7장)
+    ├── MultipartExperimentController.java       /transfer (transferTo), /bytes (getBytes)
+    └── ArrivalTimeFilter.java                   요청 도착 시각을 남겨 컨트롤러가 기다린 시간을 잼
+
 resources/static/
 ├── index.html                메인. 방식 고르기
 ├── streaming/index.html      스트리밍 방식 화면
@@ -212,3 +217,48 @@ uploads/chunked-{uploadId}.dat         합친 결과 (streaming-{id}.dat 와 같
 - **이어 올리기**: 서버는 `missingChunks()`로 빠진 조각을 알지만, 그걸 화면에 알려 주는 API가 아직 없습니다.
 - **병렬 전송**: 조각을 하나씩 순서대로 보냅니다. 같은 번호 조각이 동시에 오면 같은 `.tmp`를 같이 쓰게 됩니다.
 - **세션 정리**: 세션이 메모리에만 있어서, 서버를 재시작하면 진행 중이던 업로드는 404가 됩니다. 완료하지 않고 버려진 조각 폴더를 지우는 일도 아직 없습니다.
+
+---
+
+## 7. 비교 실험: MultipartFile로 받으면
+
+흔히 쓰는 `MultipartFile`로 1GB를 받으면 서버에서 무슨 일이 일어나는지 봅니다. 업로드 방식이 아니라 실험이라서 `multipart` 패키지에 컨트롤러와 필터만 있습니다.
+
+    curl -F "file=@test-1g.bin" http://localhost:8098/api/multipart/transfer
+    curl -F "file=@test-1g.bin" http://localhost:8098/api/multipart/bytes
+
+- `/transfer`: 정석. `transferTo`로 저장합니다.
+- `/bytes`: 하면 안 되는 것. `getBytes()`로 힙에 통째로 올립니다.
+- 응답에 컨트롤러가 기다린 시간, 컨트롤러에 들어온 순간의 톰캣 임시 파일, 힙 사용량이 나옵니다.
+- 스프링 부트 기본 제한(파일 1MB, 요청 10MB)으로는 1GB가 바로 거절되어서, `application.properties`에서 2GB로 늘려 뒀습니다.
+
+### 확인해 본 결과
+
+2026-10-19에 1GB 파일(`fsutil file createnew`)을 curl로 보냈습니다. 톰캣 임시 폴더는 C:, 저장 폴더는 D:입니다.
+
+| | 컨트롤러에 들어오기까지 | 들어온 순간 톰캣 임시 폴더 | 컨트롤러 안 작업 | 힙 |
+|---|---|---|---|---|
+| `transferTo` | 31.2초 | `upload_….tmp` 1024MB 이미 있음 | 0.3초 | 12MB → 12MB |
+| `getBytes()` (최대 힙 15GB) | 30.8초 | 같음 | 1.5초 | 12MB → 1044MB |
+| `getBytes()` (`-Xmx512m`) | 약 31초 | 같음 | `OutOfMemoryError: Java heap space` | 500 응답 |
+
+- 업로드 31초 동안 컨트롤러는 불리지 않습니다. 스프링이 본문을 끝까지 읽어 톰캣 임시 폴더에 다 쓴 다음에야 컨트롤러를 부릅니다.
+- 메모리는 지켜지지만 디스크를 두 번 씁니다(임시 파일 → 진짜 위치). 임시 파일은 요청이 끝나면 지워집니다.
+- `getBytes()`는 디스크에 잘 있던 파일을 힙으로 통째로 읽습니다. 힙이 작으면 그 요청이 `OutOfMemoryError`로 실패합니다.
+
+### 스트리밍과 뭐가 다른가
+
+둘 다 같은 톰캣이고, 둘 다 메모리에 1GB를 올리지 않습니다. 차이는 **본문을 누가, 언제 읽느냐**입니다.
+
+```
+[multipart]  요청 도착 → 스프링이 본문을 끝까지 읽어 임시 파일에 씀 → 컨트롤러 → 임시 파일을 진짜 위치로
+[streaming]  요청 도착 → 컨트롤러 → 내 코드가 getInputStream()에서 8KB씩 읽어 진짜 위치에 씀
+```
+
+| | multipart | streaming |
+|---|---|---|
+| 본문을 읽는 주체 | 스프링 multipart 파서 | 내 코드 |
+| 컨트롤러가 불리는 때 | 다 받은 뒤 | 헤더만 오면 바로 |
+| 디스크 쓰기 | 두 번 | 한 번 |
+| 임시 디스크 공간 | 업로드 크기만큼 (10명이면 10GB) | 필요 없음 |
+| 받으면서 처리 | 불가능 | 가능 (해시 계산, 줄 단위 파싱, 다른 저장소로 넘기기) |
